@@ -3,6 +3,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import JSZip from "jszip";
 import { ThinkingOrb } from "thinking-orbs";
+import { modalCutout, type CutoutMetrics } from "./services/cutout";
 
 class OrbBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -1046,6 +1047,12 @@ function removeBackgroundOffMainThread(file: File, model: RemoveBgModel, progres
   });
 }
 
+// Retained as an explicit development fallback. The Beta user path never calls it automatically.
+export async function browserCutout(file: File, model: RemoveBgModel = "isnet_fp16") {
+  const removed = await removeBackgroundOffMainThread(file, model, () => undefined);
+  return (await restoreLightForeground(file, removed)).blob;
+}
+
 type RemoveBgItem = {
   id: string;
   file: File;
@@ -1055,12 +1062,12 @@ type RemoveBgItem = {
   resultUrl?: string;
   outputName?: string;
   error?: string;
+  metrics?: CutoutMetrics;
 };
 
 function BackgroundRemover({ directorySupported }: { directorySupported: boolean }) {
   const [items, setItems] = useState<RemoveBgItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [model, setModel] = useState<RemoveBgModel>("isnet_fp16");
   const [dragging, setDragging] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1078,7 +1085,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
   }), []);
 
-  const processEntries = async (entries: RemoveBgItem[], selectedModel = model) => {
+  const processEntries = async (entries: RemoveBgItem[]) => {
     if (!entries.length) return;
     setProcessing(true);
     setProgress(0);
@@ -1088,36 +1095,18 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     try {
       for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index];
-        const firstRun = index === 0;
-        setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: firstRun ? "loading" : "processing", error: undefined } : item));
-        setPhase(firstRun ? "正在准备本地处理组件" : `正在识别主体 ${index + 1}/${entries.length}`);
+        setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: "loading", error: undefined } : item));
+        setPhase(`正在上传 ${index + 1}/${entries.length}`);
         try {
-          const resultFromWorker = await removeBackgroundOffMainThread(entry.file, selectedModel, (key, current, total) => {
-              if (!total) return;
-              const itemProgress = Math.min(1, current / total);
-              setProgress(Math.round(((index + itemProgress) / entries.length) * 100));
-              if (key.startsWith("fetch:")) setPhase(`首次加载精细模型 ${Math.round(itemProgress * 100)}%`);
-              else if (key === "stage:model") setPhase("正在初始化精细模型");
-              else if (key === "stage:preprocess") setPhase(`正在预处理图片 ${index + 1}/${entries.length}`);
-              else if (key === "compute:decode") setPhase(`正在读取图片 ${index + 1}/${entries.length}`);
-              else if (key === "compute:inference") setPhase(`正在分析主体边缘 ${index + 1}/${entries.length}`);
-              else if (key === "compute:mask") setPhase(`正在融合边缘遮罩 ${index + 1}/${entries.length}`);
-              else if (key === "compute:encode") setPhase(`正在生成透明 PNG ${index + 1}/${entries.length}`);
-          });
-          let result: Blob = resultFromWorker;
-          setPhase(`正在保护浅色主体 ${index + 1}/${entries.length}`);
-          await yieldToBrowser(0);
-          const restored = await restoreLightForeground(entry.file, result);
-          result = restored.blob;
-          if ((restored.coverage ?? 0) < 0.0015) {
-            throw new Error("未识别到有效主体，请改用清晰原图或素描保护模式重试");
-          }
-          if (restored.enhanced) setPhase("已自动保护素描与浅色主体");
+          setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: "processing" } : item));
+          setPhase(`正在智能抠图 ${index + 1}/${entries.length}`);
+          const { blob: result, metrics } = await modalCutout(entry.file);
+          setPhase(`正在生成结果 ${index + 1}/${entries.length}`);
           const resultUrl = URL.createObjectURL(result);
           setItems((current) => current.map((item) => {
             if (item.id !== entry.id) return item;
             if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
-            return { ...item, result, resultUrl, outputName: `${baseName(item.file.name)}（抠图）.png`, status: "done" };
+            return { ...item, result, resultUrl, metrics, outputName: `${baseName(item.file.name)}-cutout.png`, status: "done" };
           }));
         } catch (error) {
           failures += 1;
@@ -1132,9 +1121,6 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
       }
       setPhase("处理完成");
       setMessage(failures ? `${entries.length - failures} 张已完成，${failures} 张处理失败，可单独重试。` : `${entries.length} 张图片已完成抠图，透明背景已保留。`);
-    } catch {
-      setPhase("模型加载失败");
-      setMessage("本地处理组件加载失败，请检查网络后重试。首次使用完成后会自动缓存。");
     } finally {
       setProcessing(false);
     }
@@ -1144,14 +1130,14 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     if (processing) return;
     const known = new Set(items.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
     const valid = incoming.filter((file) => {
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) return false;
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 25 * 1024 * 1024) return false;
       const key = `${file.name}:${file.size}:${file.lastModified}`;
       if (known.has(key)) return false;
       known.add(key);
       return true;
     });
     if (!valid.length) {
-      setMessage("没有发现新的可处理图片，请选择 JPG、PNG 或 WebP 文件。");
+      setMessage("没有发现新的可处理图片。请选择不超过 25 MB 的 JPG、PNG 或 WebP。");
       return;
     }
     const ready = valid.map((file) => ({
@@ -1244,7 +1230,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     <>
       <section className="hero remove-bg-hero">
         <div>
-          <p className="eyebrow">图片抠图 · 本地批处理</p>
+          <p className="eyebrow">图片抠图 · AI 精细处理 Beta</p>
           <h1>主体留下，<em>背景干净退场。</em></h1>
           <p className="hero-copy">批量识别人像与商品主体，导出透明背景 PNG。</p>
         </div>
@@ -1266,7 +1252,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
                 <span className="remove-bg-upload-icon" aria-hidden="true"><ToolIcon type="remove-bg" /></span>
                 <strong>拖入需要抠图的图片</strong>
                 <span>拖放到这里，或点击选择 JPG、PNG、WebP</span>
-                <small className="local-processing-note"><i /> 仅在本机处理 · 图片不会上传</small>
+                <small className="local-processing-note"><i /> 图片将加密上传至智能抠图服务处理</small>
               </button>
             ) : (
               <div className="remove-bg-board">
@@ -1274,7 +1260,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
                   <div><span className={`status-dot ${processing ? "is-working" : ""}`} /><strong>{processing ? phase : "预览结果"}</strong><span>{completed.length}/{items.length} 已完成</span></div>
                   <button type="button" disabled={processing} onClick={() => inputRef.current?.click()}>＋ 添加图片</button>
                 </div>
-                {processing && <div className="remove-bg-progress"><i style={{ width: `${progress}%` }} /><span>{progress}%</span></div>}
+                {processing && <div className="remove-bg-progress is-indeterminate" aria-label={phase}><i /></div>}
                 {selected && (
                   <div className="remove-bg-compare">
                     <figure>
@@ -1312,22 +1298,18 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
         </div>
 
         <aside className="settings-card remove-bg-settings">
-          <div className="settings-title"><span>01</span><div><b>抠图质量</b><small>CUTOUT SETTINGS</small></div></div>
-          <fieldset>
-            <legend>处理模式</legend>
-            <div className="remove-model-grid">
-              <button type="button" className={model === "isnet_fp16" ? "active" : ""} disabled={processing} onClick={() => setModel("isnet_fp16")}><b>精细模式</b><small>发丝与商品边缘</small></button>
-              <button type="button" className={model === "isnet_quint8" ? "active" : ""} disabled={processing} onClick={() => setModel("isnet_quint8")}><b>快速模式</b><small>模型更小，处理更快</small></button>
-            </div>
-            <p className="field-help">首次使用需加载本地处理组件，完成后浏览器会自动缓存。</p>
-          </fieldset>
-          <button type="button" className="reprocess-button" disabled={!items.length || processing} onClick={() => void reprocess()}>按当前精度重新处理 <span>↻</span></button>
+          <div className="settings-title"><span>01</span><div><b>智能抠图</b><small>AI CUTOUT BETA</small></div></div>
+          <div className="remove-bg-tips">
+            <span>精细边缘模型</span>
+            <p>自动处理发丝、毛发、植物和复杂边缘。服务繁忙时可能需要等待，请保持页面打开。</p>
+          </div>
+          <button type="button" className="reprocess-button" disabled={!items.length || processing} onClick={() => void reprocess()}>重新处理 <span>↻</span></button>
 
           <div className="divider" />
           <div className="settings-title compact"><span>02</span><div><b>输出设置</b><small>EXPORT SETTINGS</small></div></div>
           <div className="remove-bg-tips">
-            <span>自动保色已开启</span>
-            <p>AI 遮罩会与边缘色差融合，优先保护浅色、半透明和细小主体。</p>
+            <span>原尺寸透明 PNG</span>
+            <p>结果保持原始分辨率，不降低输出质量。</p>
           </div>
 
           <div className="export-block">
@@ -2127,7 +2109,10 @@ export default function Home() {
         <div className="current-tool"><span><ToolIcon type={currentTool.id} /></span><b>{currentTool.name}</b></div>
         <div className="top-actions">
           <button className="command-trigger" type="button" onClick={() => setLauncherOpen(true)}><ToolIcon type="search" /> 搜索工具 <kbd>Ctrl K</kbd></button>
-          <div className="privacy-note"><span aria-hidden="true">●</span> 仅在本机处理 · 不上传</div>
+          <div className="privacy-note">
+            <span aria-hidden="true">●</span>
+            {activeTool === "remove-bg" ? "智能抠图服务处理 · 结果仅在本机导出" : "仅在本机处理 · 不上传"}
+          </div>
         </div>
       </header>
 

@@ -552,6 +552,9 @@ legend span { color: #a7a198; font-weight: 400; margin-left: 5px; }
 .remove-bg-progress { position: relative; height: 3px; background: #e4dfd7; }
 .remove-bg-progress i { display: block; height: 100%; background: var(--orange); transition: width .2s; }
 .remove-bg-progress span { position: absolute; z-index: 2; right: 11px; top: 8px; padding: 3px 6px; border-radius: 4px; background: rgba(37,35,31,.78); color: white; font: 10px var(--font-mono); }
+.remove-bg-progress.is-indeterminate { overflow: hidden; }
+.remove-bg-progress.is-indeterminate i { width: 34%; animation: cutout-loading 1.4s ease-in-out infinite; }
+@keyframes cutout-loading { from { transform: translateX(-120%); } to { transform: translateX(310%); } }
 .remove-bg-compare { flex: 1; min-height: 458px; padding: 30px; background: #302e2a; display: grid; grid-template-columns: minmax(0,1fr) 42px minmax(0,1fr); align-items: center; }
 .remove-bg-compare figure { min-width: 0; margin: 0; box-shadow: 0 15px 38px rgba(0,0,0,.16); }
 .remove-bg-compare figure > div { height: 310px; padding: 16px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.1); border-radius: 8px 8px 0 0; background: #3b3935; overflow: hidden; }
