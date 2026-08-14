@@ -3,7 +3,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import JSZip from "jszip";
 import { ThinkingOrb } from "thinking-orbs";
-import { modalCutout, type CutoutMetrics } from "./services/cutout";
+import { CutoutError, modalCutout, type CutoutMetrics } from "./services/cutout";
 
 class OrbBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -1062,6 +1062,10 @@ type RemoveBgItem = {
   resultUrl?: string;
   outputName?: string;
   error?: string;
+  errorCode?: string;
+  httpStatus?: number;
+  requestId?: string;
+  totalRequestMs?: number;
   metrics?: CutoutMetrics;
 };
 
@@ -1095,25 +1099,55 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     try {
       for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index];
-        setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: "loading", error: undefined } : item));
+        let requestStarted = performance.now();
+        setItems((current) => current.map((item) => item.id === entry.id ? {
+          ...item,
+          status: "loading",
+          error: undefined,
+          errorCode: undefined,
+          httpStatus: undefined,
+          requestId: undefined,
+          totalRequestMs: undefined,
+        } : item));
         setPhase(`正在上传 ${index + 1}/${entries.length}`);
         try {
           setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: "processing" } : item));
           setPhase(`正在智能抠图 ${index + 1}/${entries.length}`);
-          const { blob: result, metrics } = await modalCutout(entry.file);
+          requestStarted = performance.now();
+          const slowNotice = window.setTimeout(() => setPhase("图片较大，仍在处理中，请保持页面打开"), 60_000);
+          let cutoutResult: Awaited<ReturnType<typeof modalCutout>>;
+          try {
+            cutoutResult = await modalCutout(entry.file);
+          } finally {
+            window.clearTimeout(slowNotice);
+          }
+          const { blob: result, metrics, requestId, status: httpStatus } = cutoutResult;
+          const totalRequestMs = Math.round(performance.now() - requestStarted);
           setPhase(`正在生成结果 ${index + 1}/${entries.length}`);
           const resultUrl = URL.createObjectURL(result);
           setItems((current) => current.map((item) => {
             if (item.id !== entry.id) return item;
             if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
-            return { ...item, result, resultUrl, metrics, outputName: `${baseName(item.file.name)}-cutout.png`, status: "done" };
+            return { ...item, result, resultUrl, metrics, requestId, httpStatus, totalRequestMs, outputName: `${baseName(item.file.name)}-cutout.png`, status: "done" };
           }));
         } catch (error) {
           failures += 1;
+          const diagnostic = error instanceof CutoutError ? error : new CutoutError("主体识别失败", "unknown");
+          const totalRequestMs = Math.round(performance.now() - requestStarted);
+          console.warn("[cutout] Modal failure", {
+            code: diagnostic.code,
+            httpStatus: diagnostic.status,
+            requestId: diagnostic.requestId,
+            totalRequestMs,
+          });
           setItems((current) => current.map((item) => item.id === entry.id ? {
             ...item,
             status: "error",
-            error: error instanceof Error ? error.message : "主体识别失败",
+            error: diagnostic.message,
+            errorCode: diagnostic.code,
+            httpStatus: diagnostic.status,
+            requestId: diagnostic.requestId,
+            totalRequestMs,
           } : item));
         }
         setProgress(Math.round(((index + 1) / entries.length) * 100));
