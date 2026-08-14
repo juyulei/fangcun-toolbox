@@ -399,6 +399,7 @@ type PdfItem = {
 };
 
 type PdfJsModule = typeof import("pdfjs-dist");
+type PdfLoadingTask = ReturnType<PdfJsModule["getDocument"]>;
 let pdfJsPromise: Promise<PdfJsModule> | null = null;
 
 function getPdfJs() {
@@ -478,7 +479,7 @@ function PdfToImages({ directorySupported }: { directorySupported: boolean }) {
   useEffect(() => {
     if (!selected || !canvasRef.current) return;
     let cancelled = false;
-    let documentProxy: unknown = null;
+    let loadingTask: PdfLoadingTask | null = null;
     setPreviewBusy(true);
     setPreviewStage("正在载入 PDF 引擎");
     void (async () => {
@@ -486,8 +487,8 @@ function PdfToImages({ directorySupported }: { directorySupported: boolean }) {
         const pdfjs = await getPdfJs();
         if (!cancelled) setPreviewStage("正在读取页面结构");
         const task = pdfjs.getDocument({ data: new Uint8Array(await selected.file.arrayBuffer()) });
+        loadingTask = task;
         const pdf = await task.promise;
-        documentProxy = pdf;
         if (!cancelled) {
           setFiles((current) => current.map((item) => item.id === selected.id ? { ...item, pages: pdf.numPages } : item));
         }
@@ -506,12 +507,12 @@ function PdfToImages({ directorySupported }: { directorySupported: boolean }) {
       } catch {
         if (!cancelled) setMessage("PDF 首页预览失败，但仍可尝试导出。");
       } finally {
-        if (documentProxy) await (documentProxy as { destroy: () => Promise<void> }).destroy();
+        if (loadingTask) await loadingTask.destroy();
         if (!cancelled) setPreviewBusy(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [selected]);
+  }, [selected?.id]);
 
   const processPdfs = async (downloadAsZip = false) => {
     if (!files.length || importing || processing) return;
@@ -541,11 +542,11 @@ function PdfToImages({ directorySupported }: { directorySupported: boolean }) {
     try {
       for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
         const item = files[fileIndex];
-        let documentProxy: unknown = null;
+        let loadingTask: PdfLoadingTask | null = null;
         try {
           const task = pdfjs.getDocument({ data: new Uint8Array(await item.file.arrayBuffer()) });
+          loadingTask = task;
           const pdf = await task.promise;
-          documentProxy = pdf;
           setFiles((current) => current.map((entry) => entry.id === item.id ? { ...entry, pages: pdf.numPages } : entry));
           const pages = parsePageRange(pageRange, pdf.numPages);
           const digits = Math.max(3, String(pdf.numPages).length);
@@ -583,7 +584,7 @@ function PdfToImages({ directorySupported }: { directorySupported: boolean }) {
             await yieldToBrowser();
           }
         } finally {
-          if (documentProxy) await (documentProxy as { destroy: () => Promise<void> }).destroy();
+          if (loadingTask) await loadingTask.destroy();
         }
       }
 

@@ -130,7 +130,19 @@ main 完整源码 -> GitHub Actions -> npm ci / lint / typecheck / build / test 
 - 响应式：621px 窄窗口与 1440×900 桌面窗口均通过
 - 线上对比：同一 1440×900 视口下布局坐标与截图一致
 
-受当前内置浏览器测试驱动限制，原生文件选择器没有向自动化层返回 file chooser 事件，因此本轮未自动完成真实文件的“选择 -> 处理 -> 下载”点击链路。该部分通过以下证据降低风险：产品处理源码和线上版本一致；文件输入的 `multiple`、`accept`、`webkitdirectory` 契约已检查；ZIP、目录选择、PDF Worker、抠图 Worker 和 WASM 链路均有构建守护测试。合并前仍建议由人工各执行一次图片切分 ZIP、PDF 导出和文件夹保存冒烟测试。
+2026-08-14 使用独立 Chromium 和真实文件完成合并前 smoke test：
+
+| 链路 | 真实文件验收结果 |
+| --- | --- |
+| 图片切分 | `素描基础_02.png` 成功切为 `素描基础_02（1）.png`、`素描基础_02（2）.png`，ZIP 下载及文件名通过 |
+| PDF 转图片 | 真实 1 页 `smoke-invoice.pdf` 成功导出 `smoke-invoice_001.png`，ZIP 下载通过 |
+| 图片压缩 | 真实 JPG 成功输出 `portrait（压缩）.jpg`，ZIP 下载通过 |
+| 智能抠图 | 真实 JPG 成功输出 `portrait（抠图）.png`，确认 PNG 为 RGBA、包含 alpha 透明通道，ZIP 下载通过 |
+| 批量重命名 | 两个真实 JPG 成功输出 `001.jpg`、`002.jpg`，ZIP 下载通过 |
+| ZIP fallback | 上述五个工具均实际生成并校验 ZIP 内容 |
+| Chromium 文件夹输出 | 使用真实 `FileSystemDirectoryHandle` 写入 Chromium OPFS 目录，图片切分的两张 PNG 均写入成功 |
+
+文件夹输出验证覆盖了产品实际调用的 File System Access API 写入链路；Windows 原生目录选择器 UI 未由自动化驱动操作，这是本轮验收边界。Smoke test 期间还发现并修复了 PDF.js 6 兼容问题：资源销毁应调用 `PDFDocumentLoadingTask.destroy()`，而不是文档代理上的不存在方法；修复后重新完成 PDF 预览和导出验收。
 
 ## 浏览器兼容性风险
 
@@ -139,18 +151,25 @@ main 完整源码 -> GitHub Actions -> npm ci / lint / typecheck / build / test 
 - GitHub Pages 首次加载 23.9 MB WASM 时受网络缓存和带宽影响。
 - WebGPU 未作为默认推理路径；CPU/WASM 更稳定但速度较慢。
 - 单体 `App.tsx` 约 2,300 行，五个工具共享同一组件文件，后续维护成本较高；本次为避免功能回退没有拆分。
-- 目前测试侧重构建契约和浏览器冒烟，尚缺各工具的可重复端到端文件夹/下载自动化。
+- 目前已有构建契约和一轮真实文件浏览器 smoke test，但尚缺纳入 CI 的可重复端到端文件夹/下载自动化；Windows 原生目录选择器 UI 仍需人工复验。
 
 ## 与当前线上功能是否一致
 
-结论：**源码能力、交互入口、Worker/WASM 资源链路和视觉布局与当前线上一致**。本次没有新增功能、修改 UI 或更改处理算法；仅调整工程入口、类型/ESLint 注释、依赖和部署方式。
+结论：**源码能力、交互入口、Worker/WASM 资源链路和视觉布局与当前线上一致**。本次没有新增功能、修改 UI 或更改处理算法；仅调整工程入口、类型/ESLint 注释、依赖和部署方式，并修复真实 smoke test 暴露的 PDF.js 6 资源销毁兼容问题。
 
-## GitHub Pages 是否需要手动设置
+## GitHub Pages 设置顺序
 
-需要一次性确认：
+合并此迁移 PR 之前，必须先确认并完成一次性切换：
 
 ```text
 Repository Settings -> Pages -> Build and deployment -> Source -> GitHub Actions
 ```
 
-如果当前仍为 `Deploy from a branch`，必须改成 `GitHub Actions`。修改后无需再人工提交 `dist` 或根目录 `assets/`。
+正确顺序：
+
+1. 合并前将 Pages Source 切换为 `GitHub Actions`
+2. 合并 PR
+3. 等待 `deploy-pages` workflow 通过
+4. 复验线上 GitHub Pages 地址
+
+如果当前仍为 `Deploy from a branch`，请先完成切换，不要先合并。切换后无需再人工提交 `dist` 或根目录 `assets/`。

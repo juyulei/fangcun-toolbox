@@ -74,7 +74,7 @@ PR 会先由 `.github/workflows/ci.yml` 执行只读源码检查。推送到 `ma
 /fangcun-toolbox/
 ```
 
-仓库切换到此流程时，需要在 GitHub 仓库的 **Settings -> Pages -> Build and deployment -> Source** 中选择 **GitHub Actions**。这是一次性设置；之后不再手工复制 `dist` 或维护带哈希的 `assets/index-*.js`。
+合并此迁移 PR 之前，请先在 GitHub 仓库的 **Settings -> Pages -> Build and deployment -> Source** 中切换为 **GitHub Actions**。确认切换完成后再合并 PR；合并后等待 `deploy-pages` workflow 通过，最后复验线上地址。这是一次性设置；之后不再手工复制 `dist` 或维护带哈希的 `assets/index-*.js`。
 
 ## 浏览器兼容性
 
