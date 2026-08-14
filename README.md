@@ -68,7 +68,7 @@ npm run preview
 完整源码（main） -> GitHub Actions -> npm ci -> 检查与构建 -> GitHub Pages
 ```
 
-推送到 `main` 后，`.github/workflows/deploy-pages.yml` 会使用官方 Pages Actions 构建并发布 `dist/`。Vite 的生产 `base` 固定为：
+PR 会先由 `.github/workflows/ci.yml` 执行只读源码检查。推送到 `main` 后，`.github/workflows/deploy-pages.yml` 会使用官方 Pages Actions 构建并发布 `dist/`。Vite 的生产 `base` 固定为：
 
 ```text
 /fangcun-toolbox/

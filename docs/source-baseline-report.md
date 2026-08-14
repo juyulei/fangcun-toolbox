@@ -95,6 +95,8 @@ main 完整源码 -> GitHub Actions -> npm ci / lint / typecheck / build / test 
 
 ## GitHub Actions 部署
 
+`.github/workflows/ci.yml` 会在针对 `main` 的 PR 上以只读权限执行 `npm ci`、lint、typecheck 和 test，阻止未通过检查的源码进入正式分支。
+
 `.github/workflows/deploy-pages.yml` 在 `main` push 或手动触发时执行：
 
 1. `actions/checkout@v4`
