@@ -20,6 +20,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    env:
+      VITE_CUTOUT_API_BASE: ${{ vars.VITE_CUTOUT_API_BASE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -3,7 +3,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import JSZip from "jszip";
 import { ThinkingOrb } from "thinking-orbs";
-import { CutoutError, modalCutout, type CutoutMetrics } from "./services/cutout";
+import { CutoutError, cutout, type CutoutMetrics } from "./services/cutout";
 
 class OrbBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -1115,9 +1115,9 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
           setPhase(`正在智能抠图 ${index + 1}/${entries.length}`);
           requestStarted = performance.now();
           const slowNotice = window.setTimeout(() => setPhase("图片较大，仍在处理中，请保持页面打开"), 60_000);
-          let cutoutResult: Awaited<ReturnType<typeof modalCutout>>;
+          let cutoutResult: Awaited<ReturnType<typeof cutout>>;
           try {
-            cutoutResult = await modalCutout(entry.file);
+            cutoutResult = await cutout(entry.file);
           } finally {
             window.clearTimeout(slowNotice);
           }
@@ -1134,7 +1134,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
           failures += 1;
           const diagnostic = error instanceof CutoutError ? error : new CutoutError("主体识别失败", "unknown");
           const totalRequestMs = Math.round(performance.now() - requestStarted);
-          console.warn("[cutout] Modal failure", {
+          console.warn("[cutout] request failure", {
             code: diagnostic.code,
             httpStatus: diagnostic.status,
             requestId: diagnostic.requestId,

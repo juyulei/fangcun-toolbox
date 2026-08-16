@@ -1,4 +1,3 @@
-const DEFAULT_CUTOUT_API_BASE = "https://juyulei--fangcun-cutout-poc-fastapi-app.modal.run";
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 330_000;
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -18,7 +17,9 @@ export class CutoutError extends Error {
 }
 
 function apiBase() {
-  return (import.meta.env.VITE_CUTOUT_API_BASE || DEFAULT_CUTOUT_API_BASE).replace(/\/+$/, "");
+  const value = import.meta.env.VITE_CUTOUT_API_BASE?.trim();
+  if (!value) throw new CutoutError("智能抠图服务尚未配置，请稍后再试。", "not_configured");
+  return value.replace(/\/+$/, "");
 }
 
 function parseMetrics(value: string | null): CutoutMetrics | undefined {
@@ -26,7 +27,7 @@ function parseMetrics(value: string | null): CutoutMetrics | undefined {
   try { return JSON.parse(value) as CutoutMetrics; } catch { return undefined; }
 }
 
-export async function modalCutout(file: File): Promise<{ blob: Blob; metrics?: CutoutMetrics; requestId?: string; status: number }> {
+export async function cutout(file: File): Promise<{ blob: Blob; metrics?: CutoutMetrics; requestId?: string; status: number }> {
   if (!ALLOWED_TYPES.has(file.type)) throw new CutoutError("不支持此图片格式，请选择 JPG、PNG 或 WebP。", "unsupported_type");
   if (file.size > MAX_UPLOAD_BYTES) throw new CutoutError("图片不能超过 25 MB，请压缩后重试。", "file_too_large");
 
@@ -61,7 +62,7 @@ export async function modalCutout(file: File): Promise<{ blob: Blob; metrics?: C
     }
     if (!blob.type.startsWith("image/") || blob.size === 0) throw new CutoutError("服务返回了无效图片，请重试。", "invalid_response", response.status, requestId);
     const metrics = parseMetrics(response.headers.get("X-Fangcun-Metrics"));
-    console.info("[cutout] Modal result", { inputBytes: file.size, outputBytes: blob.size, requestMs: Math.round(performance.now() - started), status: response.status, requestId, metrics });
+    console.info("[cutout] result", { inputBytes: file.size, outputBytes: blob.size, requestMs: Math.round(performance.now() - started), status: response.status, requestId, metrics });
     return { blob, metrics, requestId, status: response.status };
   } finally {
     window.clearTimeout(timeout);
