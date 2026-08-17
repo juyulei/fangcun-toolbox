@@ -1075,8 +1075,9 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
   const [dragging, setDragging] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [phase, setPhase] = useState("等待图片");
+  const [phaseDetail, setPhaseDetail] = useState("");
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const itemsRef = useRef<RemoveBgItem[]>([]);
@@ -1092,7 +1093,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
   const processEntries = async (entries: RemoveBgItem[]) => {
     if (!entries.length) return;
     setProcessing(true);
-    setProgress(0);
+    setActiveIndex(null);
     setMessage("");
     let failures = 0;
 
@@ -1100,6 +1101,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
       for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index];
         let requestStarted = performance.now();
+        setActiveIndex(index + 1);
         setItems((current) => current.map((item) => item.id === entry.id ? {
           ...item,
           status: "loading",
@@ -1109,12 +1111,17 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
           requestId: undefined,
           totalRequestMs: undefined,
         } : item));
-        setPhase(`正在上传 ${index + 1}/${entries.length}`);
+        setPhase(`正在准备第 ${index + 1} 张图片`);
+        setPhaseDetail("正在提交到本地抠图服务。");
         try {
           setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: "processing" } : item));
-          setPhase(`正在智能抠图 ${index + 1}/${entries.length}`);
+          setPhase(`正在处理第 ${index + 1} 张图片`);
+          setPhaseDetail("请保持页面打开，当前任务会按顺序继续处理。");
           requestStarted = performance.now();
-          const slowNotice = window.setTimeout(() => setPhase("图片较大，仍在处理中，请保持页面打开"), 60_000);
+          const slowNotice = window.setTimeout(() => {
+            setPhase("仍在处理中，请稍等一下");
+            setPhaseDetail("本地服务仍在处理当前图片，请保持页面打开。");
+          }, 60_000);
           let cutoutResult: Awaited<ReturnType<typeof cutout>>;
           try {
             cutoutResult = await cutout(entry.file);
@@ -1123,7 +1130,8 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
           }
           const { blob: result, metrics, requestId, status: httpStatus } = cutoutResult;
           const totalRequestMs = Math.round(performance.now() - requestStarted);
-          setPhase(`正在生成结果 ${index + 1}/${entries.length}`);
+          setPhase(`已完成第 ${index + 1} 张图片`);
+          setPhaseDetail(index + 1 < entries.length ? "下一张图片将继续按顺序处理。" : "正在整理结果。");
           const resultUrl = URL.createObjectURL(result);
           setItems((current) => current.map((item) => {
             if (item.id !== entry.id) return item;
@@ -1150,10 +1158,11 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
             totalRequestMs,
           } : item));
         }
-        setProgress(Math.round(((index + 1) / entries.length) * 100));
         await yieldToBrowser(entries.length > 1 ? 80 : 30);
       }
       setPhase("处理完成");
+      setPhaseDetail("");
+      setActiveIndex(null);
       setMessage(failures ? `${entries.length - failures} 张已完成，${failures} 张处理失败，可单独重试。` : `${entries.length} 张图片已完成抠图，透明背景已保留。`);
     } finally {
       setProcessing(false);
@@ -1211,8 +1220,9 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     setItems([]);
     setSelectedId(null);
     setMessage("");
-    setProgress(0);
     setPhase("等待图片");
+    setPhaseDetail("");
+    setActiveIndex(null);
   };
 
   const saveOne = (item: RemoveBgItem) => {
@@ -1284,14 +1294,14 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
             {!items.length ? (
               <button type="button" className="remove-bg-empty" onClick={() => inputRef.current?.click()}>
                 <span className="remove-bg-upload-icon" aria-hidden="true"><ToolIcon type="remove-bg" /></span>
-                <strong>拖入需要抠图的图片</strong>
-                <span>拖放到这里，或点击选择 JPG、PNG、WebP</span>
-                <small className="local-processing-note"><i /> 图片将加密上传至智能抠图服务处理</small>
+                <strong>批量上传图片</strong>
+                <span>拖入多张图片，或点击选择 JPG、PNG、WebP</span>
+                <small className="local-processing-note"><i /> 支持多选，图片将按顺序处理</small>
               </button>
             ) : (
               <div className="remove-bg-board">
                 <div className="remove-bg-board-head">
-                  <div><span className={`status-dot ${processing ? "is-working" : ""}`} /><strong>{processing ? phase : "预览结果"}</strong><span>{completed.length}/{items.length} 已完成</span></div>
+                  <div><span className={`status-dot ${processing ? "is-working" : ""}`} /><strong>{processing ? phase : "预览结果"}</strong><span>{completed.length}/{items.length} 已完成{processing && activeIndex ? ` · 当前第 ${activeIndex} 张` : ""}</span></div>
                   <button type="button" disabled={processing} onClick={() => inputRef.current?.click()}>＋ 添加图片</button>
                 </div>
                 {processing && <div className="remove-bg-progress is-indeterminate" aria-label={phase}><i /></div>}
@@ -1303,7 +1313,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
                     </figure>
                     <span className="remove-bg-arrow" aria-hidden="true">→</span>
                     <figure className="transparent-result">
-                      <div>{selected.resultUrl ? <><img src={selected.resultUrl} alt={`${selected.file.name} 透明背景结果`} /></> : selected.status === "error" ? <button type="button" onClick={() => void reprocess([selected])}>处理失败，点击重试</button> : <span className="ai-processing"><i /><b>{selected.status === "loading" ? phase : "正在识别主体"}</b><small>复杂边缘需要一点时间</small></span>}</div>
+                      <div>{selected.resultUrl ? <><img src={selected.resultUrl} alt={`${selected.file.name} 透明背景结果`} /></> : selected.status === "error" ? <button type="button" onClick={() => void reprocess([selected])}>处理失败，点击重试</button> : <span className="ai-processing"><i /><b>{selected.status === "loading" || selected.status === "processing" ? phase : "等待处理"}</b><small>{selected.status === "loading" || selected.status === "processing" ? phaseDetail : "准备开始"}</small></span>}</div>
                       <figcaption><b>透明背景</b><span>{selected.result ? formatBytes(selected.result.size) : "PNG"}</span></figcaption>
                     </figure>
                   </div>
@@ -1320,7 +1330,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
                   <button type="button" className={`remove-bg-row ${selected?.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelectedId(item.id)}>
                     <span className={`remove-bg-status ${item.status}`}>{item.status === "done" ? "✓" : item.status === "error" ? "!" : item.status === "queued" ? String(index + 1).padStart(2, "0") : "↻"}</span>
                     <img src={item.resultUrl ?? item.originalUrl} alt="" />
-                    <span className="remove-bg-file"><b>{item.file.name}</b><small>{item.status === "done" ? `透明 PNG · ${formatBytes(item.result!.size)}` : item.status === "error" ? (item.error || "处理失败，可重试") : item.status === "queued" ? "等待处理" : "正在识别主体"}</small></span>
+                    <span className="remove-bg-file"><b>{item.file.name}</b><small>{item.status === "done" ? `透明 PNG · ${formatBytes(item.result!.size)}` : item.status === "error" ? (item.error || "处理失败，可重试") : item.status === "queued" ? "等待处理" : item.status === "loading" ? "准备中" : "处理中"}</small></span>
                     {item.status === "done" && <span className="row-download" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); saveOne(item); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); saveOne(item); } }}>下载</span>}
                     {item.status === "error" && <span className="row-download retry" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); void reprocess([item]); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void reprocess([item]); } }}>重试</span>}
                     <span className="remove-row-button" role="button" tabIndex={0} aria-label={`移除 ${item.file.name}`} onClick={(event) => { event.stopPropagation(); removeItem(item.id); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); removeItem(item.id); } }}>×</span>
@@ -1349,7 +1359,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
           <div className="export-block">
             <div className="export-summary"><span>可导出</span><strong>{completed.length}<small> 张透明 PNG</small></strong></div>
             <p className="batch-note"><b>{directorySupported ? "直接保存到一个文件夹" : "兼容下载模式"}</b>{directorySupported ? OUTPUT_FOLDER_TIP : "当前浏览器会把结果打包成一个 ZIP。"}</p>
-            {processing && <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>}
+            {processing && <div className="remove-bg-batch-summary"><strong>已完成 {completed.length} / {items.length} 张</strong><span>{activeIndex ? `当前处理第 ${activeIndex} 张，任务将按顺序继续。` : "正在准备任务…"}</span></div>}
             <div className="export-actions"><button className="export-button" type="button" disabled={!completed.length || processing || saving} onClick={() => void saveAll()}><span>{saving ? "正在保存…" : directorySupported ? `保存全部 ${completed.length} 张` : `下载全部 ${completed.length} 张`}</span><b aria-hidden="true">↘</b></button>{directorySupported && <button className="zip-fallback-button" type="button" disabled={!completed.length || processing || saving} onClick={() => void saveAll(true)}>下载一个 ZIP</button>}</div>
             {message && <p className="message" role="status">{message}</p>}
           </div>
