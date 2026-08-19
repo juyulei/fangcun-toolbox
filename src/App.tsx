@@ -41,9 +41,11 @@ type Direction = "vertical" | "horizontal";
 type OutputFormat = "png" | "jpeg" | "webp";
 type ToolGlyph = "split" | "pdf" | "compress" | "remove-bg" | "rename" | "search" | "upload";
 
+const publicAsset = (name: string) => `${import.meta.env.BASE_URL}${name}`;
+
 function ToolIcon({ type }: { type: ToolGlyph }) {
   if (type === "split" || type === "pdf" || type === "compress" || type === "remove-bg" || type === "rename") {
-    return <img className="tool-asset-icon" src={`/fangcun-toolbox/tool-${type}.svg`} alt="" aria-hidden="true" />;
+    return <img className="tool-asset-icon" src={publicAsset(`tool-${type}.svg`)} alt="" aria-hidden="true" />;
   }
   return <span className={`tool-glyph glyph-${type}`} aria-hidden="true"><i /><i /><em /></span>;
 }
@@ -633,7 +635,7 @@ function PdfToImages({ directorySupported }: { directorySupported: boolean }) {
             <input ref={inputRef} type="file" multiple accept="application/pdf" disabled={importing || processing} onChange={(event) => { void addPdfFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
             {!files.length ? (
               <button className="dropzone-empty pdf-empty" type="button" disabled={importing} onClick={() => inputRef.current?.click()}>
-                <span className={`drop-icon pdf-icon ${importing ? "is-loading" : ""}`} aria-hidden="true"><img className="tool-asset-icon" src="/fangcun-toolbox/tool-pdf.svg" alt="" /></span>
+                <span className={`drop-icon pdf-icon ${importing ? "is-loading" : ""}`} aria-hidden="true"><img className="tool-asset-icon" src={publicAsset("tool-pdf.svg")} alt="" /></span>
                 <strong>{importing ? "正在读取 PDF…" : "拖入 PDF 文件"}</strong>
                 <span>或点击选择一个或多个 PDF 文件</span>
                 <small className="local-processing-note"><i /> 仅在本机处理 · 文件不会上传</small>
@@ -1767,11 +1769,11 @@ const TOOL_CATALOG: Array<{ id: ToolId; name: string; subtitle: string; shortcut
 ];
 
 const SIDEBAR_ICON_SOURCE: Record<ToolId, string> = {
-  split: "/fangcun-toolbox/tool-split.svg",
-  pdf: "/fangcun-toolbox/tool-pdf.svg",
-  compress: "/fangcun-toolbox/tool-compress.svg",
-  "remove-bg": "/fangcun-toolbox/tool-remove-bg.svg",
-  rename: "/fangcun-toolbox/tool-rename.svg",
+  split: publicAsset("tool-split.svg"),
+  pdf: publicAsset("tool-pdf.svg"),
+  compress: publicAsset("tool-compress.svg"),
+  "remove-bg": publicAsset("tool-remove-bg.svg"),
+  rename: publicAsset("tool-rename.svg"),
 };
 
 export default function Home() {

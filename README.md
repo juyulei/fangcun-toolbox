@@ -32,11 +32,13 @@ Vite 会显示本地地址。由于正式 Pages 路径为 `/fangcun-toolbox/`，
 npm run lint
 npm run typecheck
 npm run build
+npm run build:root-domain
 npm test
 npm run preview
 ```
 
-- `npm run build` 输出到 `dist/`。
+- `npm run build` 默认输出 GitHub Pages 子路径 `/fangcun-toolbox/` 的产物到 `dist/`。
+- `npm run build:root-domain` 为未来 `https://fangcuntools.top/` 生成 root-base (`/`) 产物；它不设置或启用 custom domain。
 - `npm test` 会先重新构建，再检查 Pages 子路径、PDF Worker、抠图 Worker、ORT WASM、工具图标和关键浏览器降级路径。
 - `dist/` 是临时构建产物，不提交到 Git。
 
@@ -68,11 +70,13 @@ npm run preview
 完整源码（main） -> GitHub Actions -> npm ci -> 检查与构建 -> GitHub Pages
 ```
 
-PR 会先由 `.github/workflows/ci.yml` 执行只读源码检查。推送到 `main` 后，`.github/workflows/deploy-pages.yml` 会使用官方 Pages Actions 构建并发布 `dist/`。Vite 的生产 `base` 固定为：
+PR 会先由 `.github/workflows/ci.yml` 执行只读源码检查。推送到 `main` 后，`.github/workflows/deploy-pages.yml` 会使用官方 Pages Actions 构建并发布 `dist/`。默认 GitHub Pages 构建的 Vite `base` 为：
 
 ```text
 /fangcun-toolbox/
 ```
+
+未来根域构建使用 `npm run build:root-domain`，其 `base` 为 `/`。前端通过 `VITE_CUTOUT_API_BASE` 接收完整 API origin，例如 `https://api.fangcuntools.top`，不依赖相对 `/api` 路径。
 
 合并此迁移 PR 之前，请先在 GitHub 仓库的 **Settings -> Pages -> Build and deployment -> Source** 中切换为 **GitHub Actions**。确认切换完成后再合并 PR；合并后等待 `deploy-pages` workflow 通过，最后复验线上地址。这是一次性设置；之后不再手工复制 `dist` 或维护带哈希的 `assets/index-*.js`。
 
