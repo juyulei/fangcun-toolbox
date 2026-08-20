@@ -1,8 +1,11 @@
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+import { MAX_UPLOAD_FILE_BYTES } from "./imagePreprocess";
+
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_FILE_BYTES;
 const REQUEST_TIMEOUT_MS = 330_000;
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export type CutoutMetrics = Record<string, unknown>;
+export type CutoutLifecycle = { onResponseReady?: () => void };
 
 export class CutoutError extends Error {
   constructor(
@@ -27,15 +30,14 @@ function parseMetrics(value: string | null): CutoutMetrics | undefined {
   try { return JSON.parse(value) as CutoutMetrics; } catch { return undefined; }
 }
 
-export async function cutout(file: File): Promise<{ blob: Blob; metrics?: CutoutMetrics; requestId?: string; status: number }> {
+export async function cutout(file: File, lifecycle: CutoutLifecycle = {}): Promise<{ blob: Blob; metrics?: CutoutMetrics; requestId?: string; status: number }> {
   if (!ALLOWED_TYPES.has(file.type)) throw new CutoutError("不支持此图片格式，请选择 JPG、PNG 或 WebP。", "unsupported_type");
-  if (file.size > MAX_UPLOAD_BYTES) throw new CutoutError("图片不能超过 25 MB，请压缩后重试。", "file_too_large");
+  if (file.size > MAX_UPLOAD_BYTES) throw new CutoutError("图片不能超过 50 MB，请优化后重试。", "file_too_large");
 
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const form = new FormData();
   form.append("file", file, file.name);
-  const started = performance.now();
   try {
     let response: Response;
     try {
@@ -47,10 +49,11 @@ export async function cutout(file: File): Promise<{ blob: Blob; metrics?: Cutout
     const requestId = response.headers.get("X-Fangcun-Request-Id") ?? undefined;
     if (!response.ok) {
       let detail = "智能抠图服务处理失败，请稍后重试。";
-      if (response.status === 413) detail = "图片不能超过 25 MB，请压缩后重试。";
+      if (response.status === 413) detail = "图片不能超过 50 MB，请优化后重试。";
       else if (response.status === 415) detail = "不支持此图片格式，请选择 JPG、PNG 或 WebP。";
       throw new CutoutError(detail, `http_${response.status}`, response.status, requestId);
     }
+    lifecycle.onResponseReady?.();
     let blob: Blob;
     try {
       blob = await response.blob();
@@ -62,7 +65,6 @@ export async function cutout(file: File): Promise<{ blob: Blob; metrics?: Cutout
     }
     if (!blob.type.startsWith("image/") || blob.size === 0) throw new CutoutError("服务返回了无效图片，请重试。", "invalid_response", response.status, requestId);
     const metrics = parseMetrics(response.headers.get("X-Fangcun-Metrics"));
-    console.info("[cutout] result", { inputBytes: file.size, outputBytes: blob.size, requestMs: Math.round(performance.now() - started), status: response.status, requestId, metrics });
     return { blob, metrics, requestId, status: response.status };
   } finally {
     window.clearTimeout(timeout);

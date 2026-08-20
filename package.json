@@ -13,7 +13,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:root-domain": "npm run build:root-domain && FANGCUN_BUILD_TARGET=root-domain node --test tests/root-domain-build.test.mjs"
   },
   "dependencies": {

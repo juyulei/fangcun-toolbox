@@ -4,6 +4,8 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState, type Erro
 import JSZip from "jszip";
 import { ThinkingOrb } from "thinking-orbs";
 import { CutoutError, cutout, type CutoutMetrics } from "./services/cutout";
+import { MAX_UPLOAD_FILE_BYTES, prepareSmartUpload, type SmartUploadResult } from "./services/imagePreprocess";
+import { CUTOUT_PROCESS_STAGES, processFailureDetail, processStageCopy, type CutoutProcessStage } from "./services/processStatus";
 
 class OrbBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -1069,6 +1071,7 @@ type RemoveBgItem = {
   requestId?: string;
   totalRequestMs?: number;
   metrics?: CutoutMetrics;
+  smartUpload?: SmartUploadResult;
 };
 
 function BackgroundRemover({ directorySupported }: { directorySupported: boolean }) {
@@ -1076,8 +1079,9 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [preparingUploads, setPreparingUploads] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [phase, setPhase] = useState("等待图片");
+  const [processStage, setProcessStage] = useState<CutoutProcessStage>("reading");
   const [phaseDetail, setPhaseDetail] = useState("");
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [message, setMessage] = useState("");
@@ -1085,6 +1089,13 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
   const itemsRef = useRef<RemoveBgItem[]>([]);
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
   const completed = items.filter((item) => item.status === "done" && item.result);
+  const phase = processStageCopy(processStage).label;
+  const updateStage = (stage: CutoutProcessStage, detail = processStageCopy(stage).detail) => {
+    setProcessStage(stage);
+    setPhaseDetail(detail);
+  };
+  const visibleStages = CUTOUT_PROCESS_STAGES.filter((stage) => stage.key !== "optimizing" || selected?.smartUpload?.optimized);
+  const activeStageIndex = visibleStages.findIndex((stage) => stage.key === processStage);
 
   useEffect(() => { itemsRef.current = items; }, [items]);
   useEffect(() => () => itemsRef.current.forEach((item) => {
@@ -1113,36 +1124,35 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
           requestId: undefined,
           totalRequestMs: undefined,
         } : item));
-        setPhase(`正在准备第 ${index + 1} 张图片`);
-        setPhaseDetail("正在提交到本地抠图服务。");
+        updateStage("reading", `正在准备第 ${index + 1} 张图片并提交到抠图服务。`);
         try {
           setItems((current) => current.map((item) => item.id === entry.id ? { ...item, status: "processing" } : item));
-          setPhase(`正在处理第 ${index + 1} 张图片`);
-          setPhaseDetail("请保持页面打开，当前任务会按顺序继续处理。");
+          updateStage("analyzing", `正在分析第 ${index + 1} 张图片的主体；任务将按顺序继续。`);
           requestStarted = performance.now();
           const slowNotice = window.setTimeout(() => {
-            setPhase("仍在处理中，请稍等一下");
-            setPhaseDetail("本地服务仍在处理当前图片，请保持页面打开。");
+            updateStage("analyzing", "AI 仍在分析主体与复杂边缘，请保持页面打开。无需重复上传。");
           }, 60_000);
           let cutoutResult: Awaited<ReturnType<typeof cutout>>;
           try {
-            cutoutResult = await cutout(entry.file);
+            cutoutResult = await cutout(entry.file, { onResponseReady: () => updateStage("refining") });
           } finally {
             window.clearTimeout(slowNotice);
           }
           const { blob: result, metrics, requestId, status: httpStatus } = cutoutResult;
           const totalRequestMs = Math.round(performance.now() - requestStarted);
-          setPhase(`已完成第 ${index + 1} 张图片`);
-          setPhaseDetail(index + 1 < entries.length ? "下一张图片将继续按顺序处理。" : "正在整理结果。");
+          updateStage("encoding");
+          await yieldToBrowser(0);
           const resultUrl = URL.createObjectURL(result);
           setItems((current) => current.map((item) => {
             if (item.id !== entry.id) return item;
             if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
             return { ...item, result, resultUrl, metrics, requestId, httpStatus, totalRequestMs, outputName: `${baseName(item.file.name)}-cutout.png`, status: "done" };
           }));
+          updateStage("complete", index + 1 < entries.length ? "透明 PNG 已生成，下一张将继续按顺序处理。" : "透明 PNG 已生成，正在整理结果。");
         } catch (error) {
           failures += 1;
           const diagnostic = error instanceof CutoutError ? error : new CutoutError("主体识别失败", "unknown");
+          const failureDetail = processFailureDetail(diagnostic.code);
           const totalRequestMs = Math.round(performance.now() - requestStarted);
           console.warn("[cutout] request failure", {
             code: diagnostic.code,
@@ -1150,10 +1160,11 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
             requestId: diagnostic.requestId,
             totalRequestMs,
           });
+          updateStage("error", failureDetail);
           setItems((current) => current.map((item) => item.id === entry.id ? {
             ...item,
             status: "error",
-            error: diagnostic.message,
+            error: failureDetail,
             errorCode: diagnostic.code,
             httpStatus: diagnostic.status,
             requestId: diagnostic.requestId,
@@ -1162,8 +1173,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
         }
         await yieldToBrowser(entries.length > 1 ? 80 : 30);
       }
-      setPhase("处理完成");
-      setPhaseDetail("");
+      updateStage(failures ? "error" : "complete", failures ? `${failures} 张图片未完成，可单独重试。` : "本批次透明 PNG 已生成。");
       setActiveIndex(null);
       setMessage(failures ? `${entries.length - failures} 张已完成，${failures} 张处理失败，可单独重试。` : `${entries.length} 张图片已完成抠图，透明背景已保留。`);
     } finally {
@@ -1172,25 +1182,41 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
   };
 
   const addFiles = async (incoming: File[]) => {
-    if (processing) return;
+    if (processing || preparingUploads) return;
     const known = new Set(items.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
     const valid = incoming.filter((file) => {
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 25 * 1024 * 1024) return false;
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > MAX_UPLOAD_FILE_BYTES) return false;
       const key = `${file.name}:${file.size}:${file.lastModified}`;
       if (known.has(key)) return false;
       known.add(key);
       return true;
     });
     if (!valid.length) {
-      setMessage("没有发现新的可处理图片。请选择不超过 25 MB 的 JPG、PNG 或 WebP。");
+      setMessage("没有发现新的可处理图片。请选择不超过 50 MB 的 JPG、PNG 或 WebP。");
       return;
     }
-    const ready = valid.map((file) => ({
-      id: `${file.name}-${file.lastModified}-${crypto.randomUUID()}`,
-      file,
-      originalUrl: URL.createObjectURL(file),
-      status: "queued" as const,
-    }));
+    const ready: RemoveBgItem[] = [];
+    setPreparingUploads(true);
+    try {
+      for (const file of valid) {
+        try {
+          const smartUpload = await prepareSmartUpload(file, (stage) => updateStage(stage));
+          ready.push({
+            id: `${file.name}-${file.lastModified}-${crypto.randomUUID()}`,
+            file: smartUpload.file,
+            originalUrl: URL.createObjectURL(file),
+            status: "queued",
+            smartUpload,
+          });
+        } catch (error) {
+          updateStage("error", error instanceof Error ? error.message : processFailureDetail());
+          setMessage(error instanceof Error ? error.message : "图片优化失败，请选择其他图片。");
+        }
+      }
+    } finally {
+      setPreparingUploads(false);
+    }
+    if (!ready.length) return;
     setItems((current) => [...current, ...ready]);
     setSelectedId((current) => current ?? ready[0]?.id ?? null);
     await processEntries(ready);
@@ -1222,7 +1248,7 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
     setItems([]);
     setSelectedId(null);
     setMessage("");
-    setPhase("等待图片");
+    setProcessStage("reading");
     setPhaseDetail("");
     setActiveIndex(null);
   };
@@ -1292,9 +1318,11 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
             onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
             onDrop={(event) => { event.preventDefault(); setDragging(false); void addFiles(Array.from(event.dataTransfer.files)); }}
           >
-            <input ref={inputRef} type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={processing} onChange={(event) => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+            <input ref={inputRef} type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={processing || preparingUploads} onChange={(event) => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
             {!items.length ? (
-              <button type="button" className="remove-bg-empty" onClick={() => inputRef.current?.click()}>
+              preparingUploads ? <div className="remove-bg-empty" role="status" aria-live="polite">
+                <span className="ai-processing"><i /><b>{phase}</b><small>{phaseDetail}</small></span>
+              </div> : <button type="button" className="remove-bg-empty" onClick={() => inputRef.current?.click()}>
                 <span className="remove-bg-upload-icon" aria-hidden="true"><ToolIcon type="remove-bg" /></span>
                 <strong>批量上传图片</strong>
                 <span>拖入多张图片，或点击选择 JPG、PNG、WebP</span>
@@ -1307,6 +1335,12 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
                   <button type="button" disabled={processing} onClick={() => inputRef.current?.click()}>＋ 添加图片</button>
                 </div>
                 {processing && <div className="remove-bg-progress is-indeterminate" aria-label={phase}><i /></div>}
+                {processing && <ol className="cutout-stage-list" aria-label="抠图处理阶段">
+                  {visibleStages.map((stage, index) => {
+                    const state = processStage === "error" ? "waiting" : index < activeStageIndex ? "done" : index === activeStageIndex ? "active" : "waiting";
+                    return <li className={state} key={stage.key}><i aria-hidden="true">{state === "done" ? "✓" : index + 1}</i><span>{stage.label}</span></li>;
+                  })}
+                </ol>}
                 {selected && (
                   <div className="remove-bg-compare">
                     <figure>
