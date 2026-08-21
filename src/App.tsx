@@ -1405,6 +1405,79 @@ function BackgroundRemover({ directorySupported }: { directorySupported: boolean
   );
 }
 
+type CutoutFlowState = "EMPTY" | "SELECTED" | "PROCESSING" | "SUCCESS" | "ERROR";
+
+export function BackgroundRemoverV2() {
+  const [state, setState] = useState<CutoutFlowState>("EMPTY");
+  const [item, setItem] = useState<RemoveBgItem | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [stage, setStage] = useState("正在准备图片");
+  const [detail, setDetail] = useState("图片仅在本机处理");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const itemRef = useRef<RemoveBgItem | null>(null);
+
+  useEffect(() => { itemRef.current = item; }, [item]);
+  useEffect(() => () => {
+    if (itemRef.current?.originalUrl) URL.revokeObjectURL(itemRef.current.originalUrl);
+    if (itemRef.current?.resultUrl) URL.revokeObjectURL(itemRef.current.resultUrl);
+  }, []);
+
+  const processFile = async (entry: RemoveBgItem) => {
+    setState("PROCESSING");
+    setStage("正在识别主体");
+    setDetail("正在分析主体与复杂边缘，请保持此页面打开。");
+    setItem({ ...entry, status: "processing", error: undefined });
+    try {
+      const result = await browserCutout(entry.file);
+      const resultUrl = URL.createObjectURL(result);
+      setStage("透明背景已生成");
+      setDetail("结果已保留原始尺寸，可直接下载 PNG。");
+      setItem({ ...entry, status: "done", result, resultUrl, outputName: `${baseName(entry.file.name)}-cutout.png` });
+      setState("SUCCESS");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "处理失败，请选择其他图片后重试。";
+      setStage("处理失败");
+      setDetail(message);
+      setItem({ ...entry, status: "error", error: message });
+      setState("ERROR");
+    }
+  };
+
+  const selectFile = (file?: File) => {
+    if (!file) return;
+    if (!ACCEPTED_TYPES.includes(file.type) || file.size > MAX_UPLOAD_FILE_BYTES) {
+      setItem(null); setState("ERROR"); setStage("无法处理这张图片"); setDetail("请选择不超过 50 MB 的 JPG、PNG 或 WebP 图片。"); return;
+    }
+    if (item?.originalUrl) URL.revokeObjectURL(item.originalUrl);
+    if (item?.resultUrl) URL.revokeObjectURL(item.resultUrl);
+    const next: RemoveBgItem = { id: `${file.name}-${file.lastModified}-${crypto.randomUUID()}`, file, originalUrl: URL.createObjectURL(file), status: "queued" };
+    setItem(next); setState("SELECTED"); setStage("图片已选择"); setDetail("准备开始本地抠图。");
+    window.setTimeout(() => { void processFile(next); }, 0);
+  };
+
+  const download = () => {
+    if (!item?.result || !item.outputName) return;
+    const url = downloadBlob(item.result, item.outputName);
+    window.setTimeout(() => URL.revokeObjectURL(url), 900);
+  };
+
+  const canShowResult = state === "SUCCESS" && item?.resultUrl;
+  const selectedItem = item;
+
+  return <main className="cutout-product" aria-label="智能抠图">
+    <header className="cutout-product-header"><div className="cutout-product-brand"><span>方</span><b>方寸</b></div><span>智能抠图 · 本地处理</span></header>
+    <section className={`cutout-product-stage ${state.toLowerCase()}`} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); selectFile(event.dataTransfer.files[0]); }}>
+      <input ref={inputRef} className="cutout-product-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { selectFile(event.target.files?.[0]); event.target.value = ""; }} />
+      {!selectedItem ? <button type="button" className={`cutout-upload ${dragging ? "dragging" : ""}`} onClick={() => inputRef.current?.click()}><span className="cutout-upload-icon" aria-hidden="true">↑</span><strong>{state === "ERROR" ? stage : "上传图片"}</strong><span>{state === "ERROR" ? detail : "拖放图片到这里，或点击选择"}</span><small>JPG、PNG、WebP · 最大 50 MB · 仅在本机处理</small></button> : <>
+        <div className="cutout-product-toolbar"><div><b>{state === "SUCCESS" ? "抠图完成" : stage}</b><span>{detail}</span></div>{state !== "PROCESSING" && <button type="button" onClick={() => inputRef.current?.click()}>选择另一张</button>}</div>
+        <div className="cutout-product-preview"><figure><div><img src={selectedItem.originalUrl} alt={`${selectedItem.file.name} 原图`} /></div><figcaption><b>原图</b><span>{selectedItem.file.name} · {formatBytes(selectedItem.file.size)}</span></figcaption></figure><figure className="cutout-result"><div>{canShowResult ? <img src={selectedItem.resultUrl} alt={`${selectedItem.file.name} 透明背景结果`} /> : <div className="cutout-processing" role="status"><i /><b>{stage}</b><span>{detail}</span></div>}</div><figcaption><b>透明背景</b><span>{canShowResult ? `PNG · ${formatBytes(selectedItem.result!.size)}` : "生成中"}</span></figcaption></figure></div>
+        {state === "SUCCESS" && <div className="cutout-export"><div><b>透明 PNG</b><span>保留原始尺寸，可直接用于设计与商品图。</span></div><button type="button" onClick={download}>下载 PNG</button></div>}
+        {state === "ERROR" && <div className="cutout-error"><span>{detail}</span><button type="button" onClick={() => item && void processFile(item)}>重新处理</button></div>}
+      </>}
+    </section>
+  </main>;
+}
+
 type RenameWritable = { write: (data: Blob) => Promise<void>; close: () => Promise<void> };
 type RenameFileHandle = {
   kind: "file";
@@ -1810,7 +1883,7 @@ const SIDEBAR_ICON_SOURCE: Record<ToolId, string> = {
   rename: publicAsset("tool-rename.svg"),
 };
 
-export default function Home() {
+function LegacyHome() {
   const [activeTool, setActiveTool] = useState<ToolId>("split");
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [toolSearch, setToolSearch] = useState("");
@@ -2401,11 +2474,49 @@ export default function Home() {
           </div>
         </aside>
       </section>
-      </> : activeTool === "pdf" ? <PdfToImages directorySupported={directorySupported} /> : activeTool === "compress" ? <ImageCompressor directorySupported={directorySupported} /> : activeTool === "remove-bg" ? <BackgroundRemover directorySupported={directorySupported} /> : <ImageRenamer directorySupported={directorySupported} />}
+      </> : activeTool === "pdf" ? <PdfToImages directorySupported={directorySupported} /> : activeTool === "compress" ? <ImageCompressor directorySupported={directorySupported} /> : activeTool === "remove-bg" ? <BackgroundRemoverV2 /> : <ImageRenamer directorySupported={directorySupported} />}
       </div>
 
       <footer><span>方寸 LOCAL UTILITY</span><p>为扫描、排版与归档而生的本地工具箱。</p><span>100% LOCAL</span></footer>
       </div>
     </main>
   );
+}
+
+const navItems = ["概览", "发布", "质量", "问题", "运行时", "知识库"];
+const activities = [
+  ["10:06", "版本 rel_2026_08_21_01 已完成生产验证", "已验证"],
+  ["09:47", "Pages Deployment 已同步至当前生产版本", "健康"],
+  ["09:31", "质量运行 qrun_2026_08_21_003 通过", "通过"],
+  ["昨日 17:28", "版本 rel_2026_08_14_03 已回滚", "已回滚"],
+];
+
+function Status({ children, tone = "success" }: { children: ReactNode; tone?: "success" | "warning" | "neutral" }) {
+  return <span className={`console-status ${tone}`}><i />{children}</span>;
+}
+
+export default function App() {
+  return <div className="console-app">
+    <aside className="console-sidebar">
+      <div className="console-brand"><span>方</span><div><b>Fangcun</b><small>CONSOLE</small></div></div>
+      <nav aria-label="主导航">{navItems.map((item, index) => <button key={item} className={index === 0 ? "active" : ""} type="button"><span>{String(index + 1).padStart(2, "0")}</span>{item}{item === "问题" && <em>2</em>}</button>)}</nav>
+      <div className="console-sidebar-foot"><Status>本地数据源</Status><small>Console v0.1 · 只读</small></div>
+    </aside>
+    <main className="console-main">
+      <header className="console-topbar"><div><Status>生产环境</Status><span className="dot-sep">·</span><code>rel_2026_08_21_01</code></div><div className="console-sync"><span>数据更新于 今天 15:24</span><Status>系统健康</Status></div></header>
+      <section className="console-content">
+        <header className="console-heading"><div><p>运行总览</p><h1>概览</h1></div><span>2026 年 8 月 21 日，星期五</span></header>
+        <section className="console-hero" aria-label="生产状态"><div><p>当前生产版本</p><h2>rel_2026_08_21_01</h2><div className="console-hero-meta"><Status>已验证</Status><span>fangcun-assistant@2026.08.3</span><span>更新于 10:06</span></div></div><div className="console-hero-note"><span>质量门禁</span><b>128 / 128</b><small>核心回归全部通过</small></div></section>
+        <section className="console-stats" aria-label="关键状态">
+          <article><p>质量状态</p><strong>通过</strong><span>qrun_2026_08_21_003 · P95 1.84s</span></article>
+          <article><p>未关闭问题</p><strong>2</strong><span><b className="orange">1 High</b> · 0 Critical</span></article>
+          <article><p>运行时健康</p><strong>4 / 4</strong><span>服务健康 · 最后验证 15:24</span></article>
+        </section>
+        <section className="console-grid">
+          <article className="console-panel"><header><div><p>最近活动</p><h2>发布与验证</h2></div><button type="button">查看全部</button></header><ol className="console-activity">{activities.map(([time, title, state]) => <li key={title}><time>{time}</time><div><b>{title}</b><Status tone={state === "已回滚" ? "warning" : "success"}>{state}</Status></div></li>)}</ol></article>
+          <article className="console-panel"><header><div><p>运行状态</p><h2>站点与服务</h2></div><Status>4 / 4 健康</Status></header><div className="console-services"><div><span>Production Site</span><b>app.fangcun.example</b><Status>Healthy</Status></div><div><span>Production API</span><b>Mac mini production primary</b><Status>Healthy</Status></div><div><span>Pages Deployment</span><b>rel_2026_08_21_01</b><Status>Healthy</Status></div></div></article>
+        </section>
+      </section>
+    </main>
+  </div>;
 }

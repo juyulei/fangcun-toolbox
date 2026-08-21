@@ -1,0 +1,11 @@
+{
+  "framework": "vite",
+  "buildCommand": "npm run build:vercel-preview",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/fangcun-toolbox/:path*",
+      "destination": "/fangcun-toolbox/index.html"
+    }
+  ]
+}
